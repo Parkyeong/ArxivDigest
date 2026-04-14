@@ -6,17 +6,22 @@ import urllib.request
 import json
 import datetime
 import pytz
+import re
+
+
+def _clean(text, prefix):
+    """Strip a prefix like 'Title:' regardless of what whitespace follows."""
+    text = re.sub(r"\s+", " ", text).strip()
+    if text.lower().startswith(prefix.lower()):
+        text = text[len(prefix):].strip()
+    return text
 
 
 def _download_new_papers(field_abbr):
-    NEW_SUB_URL = f'https://arxiv.org/list/{field_abbr}/new'  # https://arxiv.org/list/cs/new
+    NEW_SUB_URL = f'https://arxiv.org/list/{field_abbr}/new'
     page = urllib.request.urlopen(NEW_SUB_URL)
-    soup = bs(page)
+    soup = bs(page, features="html.parser")
     content = soup.body.find("div", {'id': 'content'})
-
-    # find the first h3 element in content
-    h3 = content.find("h3").text   # e.g: New submissions for Wed, 10 May 23
-    date = h3.replace("New submissions for", "").strip()
 
     dt_list = content.dl.find_all("dt")
     dd_list = content.dl.find_all("dd")
@@ -26,15 +31,32 @@ def _download_new_papers(field_abbr):
     new_paper_list = []
     for i in tqdm.tqdm(range(len(dt_list))):
         paper = {}
-        paper_number = dt_list[i].text.strip().split(" ")[2].split(":")[-1]
+        # Extract arxiv id from the abs link inside dt
+        link = dt_list[i].find("a", href=re.compile(r"/abs/"))
+        if link:
+            paper_number = link["href"].rsplit("/", 1)[-1]
+        else:
+            # fallback: regex on dt text
+            m = re.search(r"(\d{4}\.\d{4,5})", dt_list[i].text)
+            paper_number = m.group(1) if m else ""
+        if not paper_number:
+            continue
         paper['main_page'] = arxiv_base + paper_number
-        paper['pdf'] = arxiv_base.replace('abs', 'pdf') + paper_number
+        paper['pdf'] = f"https://arxiv.org/pdf/{paper_number}"
 
-        paper['title'] = dd_list[i].find("div", {"class": "list-title mathjax"}).text.replace("Title: ", "").strip()
-        paper['authors'] = dd_list[i].find("div", {"class": "list-authors"}).text \
-                            .replace("Authors:\n", "").replace("\n", "").strip()
-        paper['subjects'] = dd_list[i].find("div", {"class": "list-subjects"}).text.replace("Subjects: ", "").strip()
-        paper['abstract'] = dd_list[i].find("p", {"class": "mathjax"}).text.replace("\n", " ").strip()
+        paper['title'] = _clean(
+            dd_list[i].find("div", {"class": "list-title mathjax"}).text, "Title:"
+        )
+        paper['authors'] = _clean(
+            dd_list[i].find("div", {"class": "list-authors"}).text, "Authors:"
+        )
+        paper['subjects'] = _clean(
+            dd_list[i].find("div", {"class": "list-subjects"}).text, "Subjects:"
+        )
+        paper['abstract'] = re.sub(
+            r"\s+", " ",
+            dd_list[i].find("p", {"class": "mathjax"}).text,
+        ).strip()
         new_paper_list.append(paper)
 
 
