@@ -161,3 +161,16 @@ cython_debug/
 
 # vim
 *.sw*
+
+# macOS
+.DS_Store
+
+# ArxivDigest — personal data and generated artifacts
+feedback.jsonl
+papers_metadata.jsonl
+classics_cache.json
+industry_cache.json
+src/digest.html
+src/queue.html
+src/library.html
+src/data/

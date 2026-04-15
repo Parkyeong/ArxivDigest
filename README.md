@@ -1,106 +1,215 @@
-<p align="center"><img src="./readme_images/banner.png" width=500 /></p>
+# ArxivDigest — Personalized Research Paper Pipeline
 
-**ArXiv Digest and Personalized Recommendations using Large Language Models.**
+一个个性化论文推送与阅读管理系统，三板块 + 两阶段评分 + 长期反馈闭环。
 
-This repo aims to provide a better daily digest for newly published arXiv papers based on your own research interests and natural-language descriptions, using relevancy ratings from GPT.
+- **每日 arXiv 推送**（按研究兴趣 LLM 打分）
+- **大厂动态追踪**（OpenAI / Anthropic / DeepMind / Meta FAIR / MSR 近 14 天发布）
+- **经典论文推荐**（Claude Opus 4.6 生成 + 过期 queue 复活）
+- **两阶段评分**（扫描后 Stage-1 → 精读后 Stage-2 → 沉淀 Library）
 
-You can try it out on [Hugging Face](https://huggingface.co/spaces/AutoLLM/ArxivDigest) using your own OpenAI API key.
+## 架构总览
 
-You can also create a daily subscription pipeline to email you the results.
+```
+┌─────────────────────────────────────────────────────┐
+│  📰 Daily Digest (每天新论文)                        │
+│  ├─ Top 2 Core + 3 Transfer                         │
+│  ├─ Industry Highlights (5 家大厂，每家 ≤3 篇)      │
+│  └─ Classic Papers (10 篇，每月更新)                │
+│                                                     │
+│  操作：Stage-1 打分（扫描后初评）                   │
+│                                                     │
+│  ≥7 分 ──┐                                          │
+└──────────┼─────────────────────────────────────────┘
+           ↓
+┌─────────────────────────────────────────────────────┐
+│  📖 Reading Queue (Stage-1 ≥7，待精读)              │
+│  操作：Stage-2 打分（精读后终评）                   │
+│                                                     │
+│  ≥7 分 ──┐         ≤6 丢弃                          │
+│          ↓         30 天未精读 → 进 Classics 池     │
+└──────────┼─────────────────────────────────────────┘
+           ↓
+┌─────────────────────────────────────────────────────┐
+│  📚 My Library (Stage-2 ≥7，已精读沉淀)             │
+│  搜索 + 排序 + 备注                                 │
+│  你的个人文献库                                      │
+└─────────────────────────────────────────────────────┘
+```
 
-## 📚 Contents
+## 一键运行
 
-- [What this repo does](#🔍-what-this-repo-does)
-  * [Examples](#some-examples)
-- [Usage](#💡-usage)
-  * [Running as a github action using SendGrid (Recommended)](#running-as-a-github-action-using-sendgrid-recommended)
-  * [Running as a github action with SMTP credentials](#running-as-a-github-action-with-smtp-credentials)
-  * [Running as a github action without emails](#running-as-a-github-action-without-emails)
-  * [Running from the command line](#running-from-the-command-line)
-  * [Running with a user interface](#running-with-a-user-interface)
-- [Roadmap](#✅-roadmap)
-- [Extending and Contributing](#💁-extending-and-contributing)
+```bash
+cd src
+conda activate research_paper
+python action.py --config ../config.yaml
+```
 
-## 🔍 What this repo does
+首次跑流程（~2 分钟）：
+1. 拉 arXiv `cs` 当日新论文（缓存到 `src/data/`）
+2. 检查 `src/data/scored_YYYY-MM-DD.json`：今天打过分就直接读，没打过就 LLM 并发打分
+3. 检查 `industry_cache.json`（7 天 TTL），过期则重抓 + 重打分
+4. 检查 `classics_cache.json`（30 天 TTL），过期则重新生成 10 篇
+5. 生成 **3 个 HTML 文件**：`digest.html`、`queue.html`、`library.html`
+6. 启动反馈服务器（`http://127.0.0.1:5005`）
+7. 自动打开浏览器
+8. 你点击打分，按 Ctrl+C 退出
 
-Staying up to date on [arXiv](https://arxiv.org) papers can take a considerable amount of time, with on the order of hundreds of new papers each day to filter through. There is an [official daily digest service](https://info.arxiv.org/help/subscribe.html), however large categories like [cs.AI](https://arxiv.org/list/cs.AI/recent) still have 50-100 papers a day. Determining if these papers are relevant and important to you means reading through the title and abstract, which is time-consuming.
+### 命令行参数
 
-This repository offers a method to curate a daily digest, sorted by relevance, using large language models. These models are conditioned based on your personal research interests, which are described in natural language. 
+```bash
+python action.py --config ../config.yaml [选项]
 
-* You modify the configuration file `config.yaml` with an arXiv Subject, some set of Categories, and a natural language statement about the type of papers you are interested in.  
-* The code pulls all the abstracts for papers in those categories and ranks how relevant they are to your interest on a scale of 1-10 using `gpt-3.5-turbo-16k`.
-* The code then emits an HTML digest listing all the relevant papers, and optionally emails it to you using [SendGrid](https://sendgrid.com). You will need to have a SendGrid account with an API key for this functionality to work.  
+  --refresh-industry    强制刷新大厂数据（忽略 7 天缓存）
+  --no-industry         跳过大厂板块
+  --refresh-classics    强制刷新经典论文（忽略 30 天缓存）
+  --no-classics         跳过经典板块
+```
 
-### Testing it out with Hugging Face:
+## 两阶段评分逻辑
 
-We provide a demo at [https://huggingface.co/spaces/AutoLLM/ArxivDigest](https://huggingface.co/spaces/AutoLLM/ArxivDigest). Simply enter your [OpenAI API key](https://platform.openai.com/account/api-keys) and then fill in the configuration on the right. Note that we do not store your key.
+### Stage 1 — 扫描后初评（Daily 页）
 
-![hfexample](./readme_images/hf_example.png)
+你在 Daily digest 里看 title + abstract（~5 分钟/篇），给 1-10 分：
 
-You can also send yourself an email of the digest by creating a SendGrid account and [API key](https://app.SendGrid.com/settings/api_keys).
+| 打分 | 含义 | 结果 |
+|---|---|---|
+| **1-6** | 不感兴趣 / 一般 | 丢弃，永不出现 |
+| **7-10** | 值得精读 | 自动进 **Reading Queue** |
 
-### Some examples of results:
+### Stage 2 — 精读后终评（Queue 页）
 
-#### Digest Configuration:
-- Subject/Topic: Computer Science
-- Categories: Artificial Intelligence, Computation and Language 
-- Interest: 
-  - Large language model pretraining and finetunings
-  - Multimodal machine learning
-  - Do not care about specific application, for example, information extraction, summarization, etc.
-  - Not interested in paper focus on specific languages, e.g., Arabic, Chinese, etc.
+精读完整论文后，给最终评分：
 
-#### Result:
-<p align="left"><img src="./readme_images/example_1.png" width=580 /></p>
+| 打分 | 含义 | 结果 |
+|---|---|---|
+| **1-6** | 实际读完觉得一般 | 从 queue 移除，不进 library |
+| **7-10** | 真正有价值 | 进 **My Library** 长期沉淀 |
 
-#### Digest Configuration:
-- Subject/Topic: Quantitative Finance
-- Interest: "making lots of money"
+### Queue 过期机制
 
-#### Result:
-<p align="left"><img src="./readme_images/example_2.png" width=580 /></p>
+Stage-1 评分后 30 天未进行 Stage-2 → 从 queue 消失，**进入下次 Classics 刷新的候选池**，可能以"经典"身份被捞回。
 
-## 💡 Usage
+## 数据文件
 
-### Running as a github action using SendGrid (Recommended).
+| 文件 | 位置 | 说明 |
+|---|---|---|
+| `config.yaml` | 根目录 | 你的研究兴趣配置 |
+| `feedback.jsonl` | 根目录 | 所有打分记录（append-only，每行含 `arxiv_id / rating / stage / timestamp / comment`） |
+| `papers_metadata.jsonl` | 根目录 | 打过分论文的完整元数据快照（append-only，取最新） |
+| `industry_cache.json` | 根目录 | 大厂动态缓存（7 天 TTL） |
+| `classics_cache.json` | 根目录 | 经典论文缓存（30 天 TTL） |
+| `src/data/cs_<date>.jsonl` | src/data/ | arXiv 当日爬取缓存 |
+| `src/data/scored_<date>.json` | src/data/ | 当日 LLM 打分缓存（7 天自动清理） |
+| `src/digest.html` | src/ | Daily 页（每次运行重新生成） |
+| `src/queue.html` | src/ | Queue 页（JS 从 server 实时拉数据） |
+| `src/library.html` | src/ | Library 页（JS 从 server 实时拉数据，支持搜索） |
 
-The recommended way to get started using this repository is to:
+## 项目结构
 
-1. Fork the repository
-2. Modify `config.yaml` and merge the changes into your main branch.
-3. Set the following secrets [(under settings, Secrets and variables, repository secrets)](https://docs.github.com/en/actions/security-guides/encrypted-secrets#creating-encrypted-secrets-for-a-repository). See [Advanced Usage](./advanced_usage.md#create-and-fetch-your-api-keys) for more details on how to create and get OpenAi and SendGrid API keys:
-   - `OPENAI_API_KEY` From [OpenAI](https://platform.openai.com/account/api-keys)
-   - `SENDGRID_API_KEY` From [SendGrid](https://app.SendGrid.com/settings/api_keys)
-   - `FROM_EMAIL` This value must match the email you used to create the SendGrid API Key.
-   - `TO_EMAIL`
-4. Manually trigger the action or wait until the scheduled action takes place.
+```
+ArxivDigest/
+├── README.md
+├── config.yaml
+├── requirements.txt
+├── feedback.jsonl             # 评分记录
+├── papers_metadata.jsonl      # 论文元数据存档
+├── industry_cache.json        # 7 天 TTL
+├── classics_cache.json        # 30 天 TTL
+└── src/
+    ├── action.py              # 主入口
+    ├── download_new_papers.py # arXiv 爬取
+    ├── relevancy.py           # LLM 双打分（并发）
+    ├── relevancy_prompt.txt   # 打分 rubric
+    ├── industry.py            # 大厂动态模块
+    ├── classics.py            # 经典论文模块（Claude Opus 4.6）
+    ├── feedback_server.py     # Flask 反馈服务器
+    ├── utils.py               # OpenAI client 封装
+    ├── digest.html            # 生成的日报
+    ├── queue.html             # 生成的 queue
+    ├── library.html           # 生成的 library
+    └── data/
+        ├── cs_<date>.jsonl    # arXiv 爬取缓存
+        └── scored_<date>.json # 每日打分缓存
+```
 
-See [Advanced Usage](./advanced_usage.md) for more details, including step-by-step images, further customization, and alternate usage.
+## 配置
 
-### Running with a user interface
+### 1. Python 环境
 
-To locally run the same UI as the Huggign Face space:
- 
-1. Install the requirements in `src/requirements.txt` as well as `gradio`.
-2. Run `python src/app.py` and go to the local URL. From there you will be able to preview the papers from today, as well as the generated digests.
-3. If you want to use a `.env` file for your secrets, you can copy `.env.template` to `.env` and then set the environment variables in `.env`.
-- Note: These file may be hidden by default in some operating systems due to the dot prefix.
-- The .env file is one of the files in .gitignore, so git does not track it and it will not be uploaded to the repository.
-- Do not edit the original `.env.template` with your keys or your email address, since `.template.env` is tracked by git and editing it might cause you to commit your secrets.
+```bash
+conda create -n research_paper python=3.10 -y
+conda activate research_paper
+pip install -r requirements.txt
+```
 
-> **WARNING:** Do not edit and commit your `.env.template` with your personal keys or email address! Doing so may expose these to the world!
+### 2. API 密钥
 
-## ✅ Roadmap
+```bash
+# OpenAI (daily / industry / classics 打分)
+export OPENAI_API_KEY=sk-xxx
 
-- [x] Support personalized paper recommendation using LLM.
-- [x] Send emails for daily digest.
-- [ ] Implement a ranking factor to prioritize content from specific authors.
-- [ ] Support open-source models, e.g., LLaMA, Vicuna, MPT etc.
-- [ ] Fine-tune an open-source model to better support paper ranking and stay updated with the latest research concepts..
+# OpenRouter (classics 生成用 Claude Opus 4.6)
+export OPENROUTER_API_KEY=sk-or-v1-xxx
+```
 
+### 3. 修改 `config.yaml`
 
-## 💁 Extending and Contributing
+```yaml
+topic: "Computer Science"
+categories: ["Artificial Intelligence", "Computation and Language", "Machine Learning", "Multiagent Systems"]
+threshold: 6  # 暂无实际作用，保留兼容
+interest: |
+  （用英文描述你的研究方向。示例见当前 config.yaml）
+```
 
-You may (and are encourage to) modify the code in this repository to suit your personal needs. If you think your modifications would be in any way useful to others, please submit a pull request.
+### 4. 预填种子论文（可选）
 
-These types of modifications include things like changes to the prompt, different language models, or additional ways for the digest is delivered to you.
+在 `feedback.jsonl` 添加带 `stage: 2, rating: 10` 的种子，同时在 `papers_metadata.jsonl` 补全元数据，这些会直接出现在 Library 冷启动。
+
+## 模型 & 成本
+
+| 任务 | 模型 | API | 频率 | 月成本 |
+|---|---|---|---|---|
+| Daily 论文打分 | `gpt-4o-mini` | OpenAI | 每天 | ~$6 |
+| Industry 论文打分 | `gpt-4o-mini` | OpenAI | 每周 | ~$0.10 |
+| Classics 论文打分 | `gpt-4o-mini` | OpenAI | 每月 | ~$0.01 |
+| **Classics 候选生成** | **`anthropic/claude-opus-4.6`** | **OpenRouter** | 每月 | ~$0.04 |
+
+**总月成本 ≈ $6-7**（按每天跑一次 Daily 估算）。
+
+## 默认参数
+
+| 参数 | 值 | 位置 |
+|---|---|---|
+| Daily 论文数 | 2 core + 3 transfer | `action.py select_top_papers()` |
+| 每批打分数 | 16 | `action.py num_paper_in_prompt` |
+| 并发度 | 8 | `relevancy.py MAX_CONCURRENCY` |
+| 反馈激活阈值 | 5 条 | `relevancy.py FEEDBACK_MIN` |
+| Industry TTL | 7 天 | `industry.py CACHE_TTL_DAYS` |
+| Industry 窗口 | 14 天 | `industry.py WINDOW_DAYS` |
+| Industry 每家 top-k | 3 | `industry.py TOP_K_PER_LAB` |
+| Classics TTL | 30 天 | `classics.py CACHE_TTL_DAYS` |
+| Classics 每月 top-k | 10 | `classics.py TOP_K` |
+| Classics LLM 候选数 | 25 | `classics.py LLM_CANDIDATE_COUNT` |
+| Queue 过期天数 | 30 天 | `feedback_server.py QUEUE_EXPIRY_DAYS` |
+| Queue 入库阈值 | 7 | `feedback_server.py QUEUE_MIN_RATING` |
+| Library 入库阈值 | 7 | `feedback_server.py LIBRARY_MIN_RATING` |
+| 反馈服务器端口 | 5005 | `feedback_server.py` |
+| Scored cache 保留 | 7 天 | `action.py` purge 逻辑 |
+
+## 工作流建议
+
+1. **每天 1 小时**：跑 `action.py`，扫 Daily 的 5 篇 + Industry 各家 + Classics 若干
+2. **快速打分（Stage-1）**：读 abstract 5-6 分钟，打 1-10 分
+3. **每周精读 3 篇**：在 Reading Queue 里挑最想读的，精读后打 Stage-2 分
+4. **沉淀到 Library**：Stage-2 ≥7 的论文自动进 library，以后写论文可搜索引用
+
+**反馈闭环激活**：累计 ≥5 条评分后，LLM 打分会参考你的口味（正反例作为 few-shot 注入 prompt），推送质量会逐步提升。
+
+## 已知限制
+
+- **大厂作者匹配精度有限**：arxiv 作者字段不带机构名，DeepMind / Meta / MSR 用宽松匹配 + LLM 兜底
+- **OpenAI / Anthropic sitemap 方案**准确但只提供标题+描述（没有完整 abstract）
+- **Daily 打分缓存只按日期**：同一天 prompt 改了也不会重新打分，需要手动 `rm src/data/scored_<今天>.json`
+- **Classics 可能命中重复论文**：LLM 生成的 arxiv ID 和验证、SS 扩展之间可能出现你已在 Library 的论文，会被过滤但偶尔有漏网
+- **反馈种子 ID 不一定真实**：`seed-amem` / `seed-aplan` 是占位 ID，不对应真实 arXiv 论文；`2603.01896` 是用户提供的真实 ID
