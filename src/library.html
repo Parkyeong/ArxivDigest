@@ -1,0 +1,120 @@
+<!DOCTYPE html>
+<html><head><meta charset="utf-8"><title>My Library</title>
+<style>
+body { font-family: -apple-system, system-ui, sans-serif; max-width: 900px; margin: 2em auto; padding: 0 1em; color: #222; }
+h1 { border-bottom: 2px solid #333; padding-bottom: 0.3em; }
+h2 { color: #c04040; margin-top: 2em; }
+h3.lab { color: #444; margin-top: 1em; border-bottom: 1px solid #ddd; padding-bottom: 0.2em; }
+nav.topnav { display: flex; gap: 1em; padding: 0.8em 0; border-bottom: 1px solid #eee; margin-bottom: 1em; }
+nav.topnav a { color: #2060c0; text-decoration: none; padding: 0.3em 0.8em; border-radius: 4px; }
+nav.topnav a.active { background: #2060c0; color: white; }
+nav.topnav a:hover:not(.active) { background: #eef; }
+.paper { border: 1px solid #ddd; border-radius: 6px; padding: 1em; margin: 1em 0; }
+.paper h3 { margin: 0 0 0.4em; font-size: 1.05em; }
+.paper a { color: #2060c0; text-decoration: none; }
+.meta { color: #666; font-size: 0.9em; margin: 0.3em 0; }
+.scores { display: inline-block; background: #eef; padding: 0.2em 0.6em; border-radius: 4px; font-size: 0.85em; margin-right: 0.5em; }
+.source-tag { display: inline-block; background: #fed; color: #a50; padding: 0.1em 0.5em; border-radius: 3px; font-size: 0.8em; margin-left: 0.4em; }
+.reason { color: #333; font-style: italic; margin: 0.5em 0; }
+.rating { margin-top: 0.6em; }
+.rating-label { font-size: 0.9em; color: #666; margin-right: 0.4em; }
+.rating button { padding: 0.3em 0.7em; margin: 0 2px; border: 1px solid #bbb; background: #fafafa; cursor: pointer; border-radius: 4px; font-size: 0.9em; }
+.rating button:hover { background: #e0e8ff; }
+.rating button.selected { background: #4080d0; color: white; border-color: #4080d0; }
+.rating .skip { color: #888; font-size: 0.85em; margin-left: 0.8em; }
+.status { color: green; font-size: 0.85em; margin-left: 0.5em; }
+.comment { margin-top: 0.5em; }
+.comment textarea { width: 100%; min-height: 2.2em; padding: 0.3em; font-family: inherit; font-size: 0.9em; border: 1px solid #ccc; border-radius: 4px; box-sizing: border-box; }
+.search-box { width: 100%; padding: 0.5em; margin: 1em 0; border: 1px solid #ccc; border-radius: 4px; font-size: 1em; box-sizing: border-box; }
+.empty { color: #999; text-align: center; padding: 2em; font-style: italic; }
+.stage-1-shown { background: #f5f5f0; font-size: 0.85em; padding: 0.4em 0.6em; border-radius: 4px; margin-top: 0.3em; color: #555; }
+.sort-row { margin: 0.5em 0; color: #666; font-size: 0.9em; }
+.sort-row button { padding: 0.2em 0.6em; margin: 0 0.2em; border: 1px solid #bbb; background: #fafafa; cursor: pointer; border-radius: 3px; font-size: 0.85em; }
+.sort-row button.active { background: #4080d0; color: white; border-color: #4080d0; }
+</style>
+</head><body>
+<nav class="topnav"><a href="digest.html">📰 Daily</a><a href="queue.html">📖 Reading Queue</a><a href="library.html" class="active">📚 My Library</a></nav>
+<h1>📚 My Library</h1>
+<p class="meta">Papers you Stage-2-rated ≥7 after deep reading — your curated research pool.</p>
+<input type="text" id="search" class="search-box" placeholder="Search title, abstract, or notes...">
+<div class="sort-row">Sort by:
+  <button data-sort="rating" class="active">Your rating</button>
+  <button data-sort="date">Date added</button>
+  <button data-sort="core">Core score</button>
+</div>
+<div id="library-list" class="empty">Loading...</div>
+<script>
+let allPapers = [];
+let currentSort = 'rating';
+
+function renderLibraryPaper(p) {
+  const safeTitle = (p.title || '').replace(/</g, '&lt;');
+  const safeAuthors = (p.authors || '').replace(/</g, '&lt;');
+  const core = p.core_score ?? '?';
+  const transfer = p.transfer_score ?? '?';
+  const s2rating = p.stage_2_rating ?? '?';
+  const s2comment = p.stage_2_comment ? `<div class="reason">💭 ${p.stage_2_comment}</div>` : '';
+  const note = p.note ? `<div class="meta">📌 ${p.note}</div>` : '';
+  const source = p.source ? `<span class="source-tag">${p.source}</span>` : '';
+  const dateStr = p.stage_2_timestamp ? p.stage_2_timestamp.slice(0, 10) : '';
+  const link = p.main_page || '#';
+  return `<div class="paper">
+<h3><a href="${link}" target="_blank">${safeTitle}</a>${source}</h3>
+<div class="meta">${safeAuthors}</div>
+<div><span class="scores">your rating: ${s2rating}/10</span><span class="scores">core: ${core}/10</span><span class="scores">transfer: ${transfer}/10</span><span class="meta" style="margin-left:0.5em;">added ${dateStr}</span></div>
+${s2comment}
+${note}
+</div>`;
+}
+
+function sortPapers(papers, key) {
+  const copy = [...papers];
+  if (key === 'rating') copy.sort((a, b) => (b.stage_2_rating || 0) - (a.stage_2_rating || 0));
+  else if (key === 'date') copy.sort((a, b) => (b.stage_2_timestamp || '').localeCompare(a.stage_2_timestamp || ''));
+  else if (key === 'core') copy.sort((a, b) => (b.core_score || 0) - (a.core_score || 0));
+  return copy;
+}
+
+function render() {
+  const q = document.getElementById('search').value.trim().toLowerCase();
+  let list = allPapers;
+  if (q) {
+    list = list.filter(p => {
+      const hay = ((p.title || '') + ' ' + (p.abstract || '') + ' ' + (p.stage_2_comment || '') + ' ' + (p.note || '')).toLowerCase();
+      return hay.includes(q);
+    });
+  }
+  list = sortPapers(list, currentSort);
+  const container = document.getElementById('library-list');
+  if (!list.length) {
+    container.className = 'empty';
+    container.textContent = q ? 'No matches.' : 'Library is empty. Read and Stage-2-rate papers ≥7 from Reading Queue to populate.';
+    return;
+  }
+  container.className = '';
+  container.innerHTML = list.map(renderLibraryPaper).join('');
+}
+
+async function loadLibrary() {
+  try {
+    const r = await fetch('http://127.0.0.1:5005/library');
+    allPapers = await r.json();
+    render();
+  } catch (e) {
+    document.getElementById('library-list').textContent = '✗ Feedback server not running.';
+  }
+}
+
+document.getElementById('search').addEventListener('input', render);
+document.querySelectorAll('.sort-row button').forEach(btn => {
+  btn.addEventListener('click', () => {
+    document.querySelectorAll('.sort-row button').forEach(b => b.classList.remove('active'));
+    btn.classList.add('active');
+    currentSort = btn.dataset.sort;
+    render();
+  });
+});
+
+window.addEventListener('DOMContentLoaded', loadLibrary);
+</script>
+</body></html>

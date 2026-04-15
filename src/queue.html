@@ -1,0 +1,124 @@
+<!DOCTYPE html>
+<html><head><meta charset="utf-8"><title>Reading Queue</title>
+<style>
+body { font-family: -apple-system, system-ui, sans-serif; max-width: 900px; margin: 2em auto; padding: 0 1em; color: #222; }
+h1 { border-bottom: 2px solid #333; padding-bottom: 0.3em; }
+h2 { color: #c04040; margin-top: 2em; }
+h3.lab { color: #444; margin-top: 1em; border-bottom: 1px solid #ddd; padding-bottom: 0.2em; }
+nav.topnav { display: flex; gap: 1em; padding: 0.8em 0; border-bottom: 1px solid #eee; margin-bottom: 1em; }
+nav.topnav a { color: #2060c0; text-decoration: none; padding: 0.3em 0.8em; border-radius: 4px; }
+nav.topnav a.active { background: #2060c0; color: white; }
+nav.topnav a:hover:not(.active) { background: #eef; }
+.paper { border: 1px solid #ddd; border-radius: 6px; padding: 1em; margin: 1em 0; }
+.paper h3 { margin: 0 0 0.4em; font-size: 1.05em; }
+.paper a { color: #2060c0; text-decoration: none; }
+.meta { color: #666; font-size: 0.9em; margin: 0.3em 0; }
+.scores { display: inline-block; background: #eef; padding: 0.2em 0.6em; border-radius: 4px; font-size: 0.85em; margin-right: 0.5em; }
+.source-tag { display: inline-block; background: #fed; color: #a50; padding: 0.1em 0.5em; border-radius: 3px; font-size: 0.8em; margin-left: 0.4em; }
+.reason { color: #333; font-style: italic; margin: 0.5em 0; }
+.rating { margin-top: 0.6em; }
+.rating-label { font-size: 0.9em; color: #666; margin-right: 0.4em; }
+.rating button { padding: 0.3em 0.7em; margin: 0 2px; border: 1px solid #bbb; background: #fafafa; cursor: pointer; border-radius: 4px; font-size: 0.9em; }
+.rating button:hover { background: #e0e8ff; }
+.rating button.selected { background: #4080d0; color: white; border-color: #4080d0; }
+.rating .skip { color: #888; font-size: 0.85em; margin-left: 0.8em; }
+.status { color: green; font-size: 0.85em; margin-left: 0.5em; }
+.comment { margin-top: 0.5em; }
+.comment textarea { width: 100%; min-height: 2.2em; padding: 0.3em; font-family: inherit; font-size: 0.9em; border: 1px solid #ccc; border-radius: 4px; box-sizing: border-box; }
+.search-box { width: 100%; padding: 0.5em; margin: 1em 0; border: 1px solid #ccc; border-radius: 4px; font-size: 1em; box-sizing: border-box; }
+.empty { color: #999; text-align: center; padding: 2em; font-style: italic; }
+.stage-1-shown { background: #f5f5f0; font-size: 0.85em; padding: 0.4em 0.6em; border-radius: 4px; margin-top: 0.3em; color: #555; }
+</style>
+</head><body>
+<nav class="topnav"><a href="digest.html">📰 Daily</a><a href="queue.html" class="active">📖 Reading Queue</a><a href="library.html">📚 My Library</a></nav>
+<h1>📖 Reading Queue</h1>
+<p class="meta">Papers you Stage-1-rated ≥7, waiting for deep reading. Rate again after reading (Stage-2) to move them to Library or discard.</p>
+<p class="meta">Auto-expires after 30 days — expired papers re-enter the classic candidate pool.</p>
+<div id="queue-list" class="empty">Loading...</div>
+<script>
+
+async function loadExistingRatings(stage) {
+  try {
+    const r = await fetch('http://127.0.0.1:5005/ratings');
+    const data = await r.json();
+    document.querySelectorAll('.paper').forEach(pdiv => {
+      const aid = pdiv.dataset.arxivId;
+      if (!aid || !data[aid]) return;
+      const entry = data[aid][stage];
+      if (!entry) return;
+      const btn = pdiv.querySelector('.rating button[data-score="' + entry.rating + '"]');
+      if (btn) btn.classList.add('selected');
+      const status = pdiv.querySelector('.status');
+      if (status) status.textContent = '✓ rated ' + entry.rating + '/10';
+      const ta = pdiv.querySelector('.comment textarea');
+      if (ta && entry.comment) ta.value = entry.comment;
+    });
+  } catch (e) { console.log('Ratings restore skipped:', e); }
+}
+
+function rate(arxivId, score, btn, stage) {
+  const pdiv = btn.closest('.paper');
+  const comment = pdiv.querySelector('.comment textarea').value;
+  const metadata = pdiv.dataset.metadata ? JSON.parse(pdiv.dataset.metadata) : null;
+  const title = metadata ? metadata.title : '';
+  fetch('http://127.0.0.1:5005/rate', {
+    method: 'POST',
+    headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({arxiv_id: arxivId, title: title, rating: score, comment: comment, stage: stage, metadata: metadata})
+  }).then(r => r.json()).then(data => {
+    const status = pdiv.querySelector('.status');
+    status.textContent = '✓ saved (' + data.total + ' total)';
+    pdiv.querySelectorAll('.rating button').forEach(b => b.classList.remove('selected'));
+    btn.classList.add('selected');
+  }).catch(e => {
+    const status = pdiv.querySelector('.status');
+    status.textContent = '✗ server not running';
+  });
+}
+
+
+function renderPaper(p) {
+  const buttons = Array.from({length: 10}, (_, i) => i + 1).map(i =>
+    `<button data-score="${i}" onclick="rate('${p.arxiv_id}', ${i}, this, 2)">${i}</button>`
+  ).join('');
+  const metaJson = JSON.stringify(p).replace(/'/g, '&#39;');
+  const safeTitle = (p.title || '').replace(/</g, '&lt;');
+  const safeReason = (p.reason || '').replace(/</g, '&lt;');
+  const safeAuthors = (p.authors || '').replace(/</g, '&lt;');
+  const core = p.core_score ?? '?';
+  const transfer = p.transfer_score ?? '?';
+  const s1rating = p.stage_1_rating ?? '?';
+  const s1comment = p.stage_1_comment ? ' · note: ' + p.stage_1_comment : '';
+  const source = p.source ? `<span class="source-tag">${p.source}</span>` : '';
+  return `<div class="paper" data-arxiv-id="${p.arxiv_id}" data-metadata='${metaJson}'>
+<h3><a href="${p.main_page}" target="_blank">${safeTitle}</a>${source}</h3>
+<div class="meta">${safeAuthors}</div>
+<div><span class="scores">core: ${core}/10</span><span class="scores">transfer: ${transfer}/10</span></div>
+<div class="reason">${safeReason}</div>
+<div class="stage-1-shown">Your Stage-1 (scan): ${s1rating}/10${s1comment}</div>
+<div class="rating"><span class="rating-label">Stage-2 (after reading):</span>${buttons}<span class="skip">(skip — stays in queue)</span><span class="status"></span></div>
+<div class="comment"><textarea placeholder="Your notes after reading"></textarea></div>
+</div>`;
+}
+
+async function loadQueue() {
+  try {
+    const r = await fetch('http://127.0.0.1:5005/queue');
+    const data = await r.json();
+    const list = document.getElementById('queue-list');
+    if (!data.length) {
+      list.className = 'empty';
+      list.textContent = 'Queue is empty. Stage-1 rate papers ≥7 on Daily to populate.';
+      return;
+    }
+    list.className = '';
+    list.innerHTML = data.map(renderPaper).join('');
+    loadExistingRatings(2);
+  } catch (e) {
+    document.getElementById('queue-list').textContent = '✗ Feedback server not running. Run: python feedback_server.py';
+  }
+}
+
+window.addEventListener('DOMContentLoaded', loadQueue);
+</script>
+</body></html>
