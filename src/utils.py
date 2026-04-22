@@ -18,12 +18,13 @@ _client = None
 def _get_client():
     global _client
     if _client is None:
-        kwargs = {}
-        org = os.getenv("OPENAI_ORG")
-        if org is not None:
-            kwargs["organization"] = org
-            logging.warning(f"Switching to organization: {org} for OAI API key.")
-        _client = OpenAI(**kwargs)
+        api_key = os.getenv("OPENROUTER_API_KEY")
+        if not api_key:
+            raise RuntimeError("OPENROUTER_API_KEY not set.")
+        _client = OpenAI(
+            api_key=api_key,
+            base_url="https://openrouter.ai/api/v1",
+        )
     return _client
 
 
@@ -42,7 +43,7 @@ class OpenAIDecodingArguments(object):
 def openai_completion(
     prompts,
     decoding_args: OpenAIDecodingArguments,
-    model_name="gpt-4.1-mini",
+    model_name="openai/gpt-4o-mini",
     sleep_time=2,
     batch_size=1,
     max_instances=sys.maxsize,
@@ -51,7 +52,6 @@ def openai_completion(
     **decoding_kwargs,
 ):
     client = _get_client()
-    is_chat_model = "gpt-3.5" in model_name or "gpt-4" in model_name
     is_single_prompt = isinstance(prompts, (str, dict))
     if is_single_prompt:
         prompts = [prompts]
@@ -82,29 +82,20 @@ def openai_completion(
                     **batch_decoding_args.__dict__,
                     **decoding_kwargs,
                 )
-                if is_chat_model:
-                    completion_batch = client.chat.completions.create(
-                        messages=[
-                            {"role": "system", "content": "You are a helpful assistant."},
-                            {"role": "user", "content": prompt_batch[0]},
-                        ],
-                        **shared_kwargs,
-                    )
-                    total_tokens = completion_batch.usage.total_tokens
-                    for choice in completion_batch.choices:
-                        completions.append({
-                            "message": {"content": choice.message.content},
-                            "total_tokens": total_tokens,
-                            "text": choice.message.content,
-                        })
-                else:
-                    completion_batch = client.completions.create(prompt=prompt_batch, **shared_kwargs)
-                    total_tokens = completion_batch.usage.total_tokens
-                    for choice in completion_batch.choices:
-                        completions.append({
-                            "text": choice.text,
-                            "total_tokens": total_tokens,
-                        })
+                completion_batch = client.chat.completions.create(
+                    messages=[
+                        {"role": "system", "content": "You are a helpful assistant."},
+                        {"role": "user", "content": prompt_batch[0]},
+                    ],
+                    **shared_kwargs,
+                )
+                total_tokens = completion_batch.usage.total_tokens if completion_batch.usage else 0
+                for choice in completion_batch.choices:
+                    completions.append({
+                        "message": {"content": choice.message.content},
+                        "total_tokens": total_tokens,
+                        "text": choice.message.content,
+                    })
                 break
             except openai.OpenAIError as e:
                 logging.warning(f"OpenAIError: {e}.")

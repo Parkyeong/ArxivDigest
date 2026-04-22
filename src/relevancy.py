@@ -15,7 +15,12 @@ FEEDBACK_MIN = 5
 
 
 def load_feedback_examples():
-    """Return (positives, negatives) lists of {title, rating, reason} if enough feedback exists."""
+    """Return (positives, negatives) lists of {title, rating, comment} if enough feedback exists.
+
+    Deduplicates by (arxiv_id, stage), keeping the latest entry per combination.
+    Only uses stage-1 ratings for few-shot calibration (stage-2 is post-read, different scale).
+    Guarantees at least 3 of each polarity when possible.
+    """
     if not os.path.exists(FEEDBACK_PATH):
         return [], []
     entries = []
@@ -26,13 +31,18 @@ def load_feedback_examples():
                 entries.append(json.loads(line))
     if len(entries) < FEEDBACK_MIN:
         return [], []
-    # dedupe by arxiv_id, keep latest rating
+    # dedupe by (arxiv_id, stage), keep latest per combination
     seen = {}
     for e in entries:
-        seen[e.get("arxiv_id", e.get("title"))] = e
-    entries = list(seen.values())
-    positives = sorted([e for e in entries if e["rating"] >= 7], key=lambda x: -x["rating"])[:5]
-    negatives = sorted([e for e in entries if e["rating"] <= 4], key=lambda x: x["rating"])[:5]
+        key = (e.get("arxiv_id", e.get("title")), int(e.get("stage", 1)))
+        existing = seen.get(key)
+        if existing and existing.get("timestamp", "") > e.get("timestamp", ""):
+            continue
+        seen[key] = e
+    # Only use stage-1 ratings for few-shot (scan-level judgements match scoring context)
+    stage1 = [e for (_, stage), e in seen.items() if stage == 1]
+    positives = sorted([e for e in stage1 if e["rating"] >= 7], key=lambda x: -x["rating"])[:5]
+    negatives = sorted([e for e in stage1 if e["rating"] <= 4], key=lambda x: x["rating"])[:5]
     return positives, negatives
 
 
@@ -44,13 +54,21 @@ def encode_prompt(query, prompt_papers):
     if positives or negatives:
         prompt += "\n\n---\nUser feedback history (calibrate your scores to match these preferences):\n"
         if positives:
-            prompt += "\nPapers the user RATED HIGH (these match the user's taste):\n"
+            prompt += "\nPOSITIVE EXAMPLES (papers the user found highly relevant):\n"
             for e in positives:
-                prompt += f"  - \"{e['title']}\" → user rating {e['rating']}/10\n"
+                reason = e.get("comment") or e.get("note") or ""
+                line = f"  - \"{e['title']}\" → user rating {e['rating']}/10"
+                if reason:
+                    line += f" — reason: {reason}"
+                prompt += line + "\n"
         if negatives:
-            prompt += "\nPapers the user RATED LOW (avoid recommending similar ones):\n"
+            prompt += "\nNEGATIVE EXAMPLES (high keyword overlap but WRONG direction — learn from these):\n"
             for e in negatives:
-                prompt += f"  - \"{e['title']}\" → user rating {e['rating']}/10\n"
+                reason = e.get("comment") or e.get("note") or ""
+                line = f"  - \"{e['title']}\" → user rating {e['rating']}/10"
+                if reason:
+                    line += f" — reason: {reason}"
+                prompt += line + "\n"
         prompt += "---\n"
 
     for idx, task_dict in enumerate(prompt_papers):
@@ -125,7 +143,7 @@ def _score_batch(prompt_papers, query, model_name, num_paper_in_prompt, temperat
     decoding_args = utils.OpenAIDecodingArguments(
         temperature=temperature,
         n=1,
-        max_tokens=160 * num_paper_in_prompt,
+        max_tokens=200 * num_paper_in_prompt,
         top_p=top_p,
     )
     try:
@@ -144,7 +162,7 @@ def _score_batch(prompt_papers, query, model_name, num_paper_in_prompt, temperat
 def generate_relevance_score(
     all_papers,
     query,
-    model_name="gpt-4o-mini",
+    model_name="openai/gpt-4o-mini",
     num_paper_in_prompt=16,
     temperature=0.3,
     top_p=1.0,

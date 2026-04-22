@@ -20,7 +20,7 @@ import requests
 from bs4 import BeautifulSoup
 
 CACHE_PATH = os.path.join(os.path.dirname(__file__), "..", "classics_cache.json")
-CACHE_TTL_DAYS = 30
+CACHE_TTL_DAYS = 7
 TOP_K = 10
 LLM_CANDIDATE_COUNT = 25
 SS_EXPAND_PER_SEED = 3
@@ -45,7 +45,11 @@ def load_feedback_seeds(feedback_path, min_rating=8):
 
 
 def llm_generate_classics(interest, seed_papers, model_name="anthropic/claude-opus-4.6"):
-    """Ask LLM to list classic papers via OpenRouter. Returns list of {"arxiv_id", "title"}."""
+    """Ask LLM to list classic papers via OpenRouter.
+
+    Returns list of {"arxiv_id", "title", "reason", "rank"} ordered by
+    recommended reading sequence (foundational first, then specialized).
+    """
     from openai import OpenAI
 
     api_key = os.environ.get("OPENROUTER_API_KEY")
@@ -65,15 +69,37 @@ def llm_generate_classics(interest, seed_papers, model_name="anthropic/claude-op
                 seed_str += f" ({s['note']})"
             seed_str += "\n"
 
-    prompt = f"""You are a research advisor. Based on the user's interest below, list {LLM_CANDIDATE_COUNT} INFLUENTIAL / CLASSIC papers they should read. These can be from any year — prioritize landmark contributions, foundational works, and highly-cited recent works.
+    prompt = f"""You are a PhD research advisor. Your student is an EARLY-STAGE PhD who
+needs to rapidly build a knowledge foundation in their research direction.
+They need papers that form the intellectual backbone of this area — not a
+broad survey, but a carefully curated reading list ordered from foundational
+to specialized.
 
-User interest:
+Based on the student's research interest below, recommend {LLM_CANDIDATE_COUNT} papers.
+
+## Selection criteria (in priority order)
+1. FOUNDATIONAL papers that define the core concepts the student must understand
+   (e.g., the paper that introduced ReAct, MCTS for LLM agents, multi-agent debate)
+2. LANDMARK papers with high citation impact that shaped the field's direction
+3. KEY RECENT papers (2024-2025) that represent the current frontier and are
+   directly on the student's research proposition
+
+## Ordering
+Return papers in RECOMMENDED READING ORDER — the order a PhD student should
+read them to build understanding progressively:
+  - Start with foundational/prerequisite works
+  - Then core methodological papers
+  - Then recent frontier papers closest to the student's specific proposition
+
+Student's research interest:
 {interest}
 {seed_str}
 
 Return a JSON array. Each entry MUST have:
-  - "arxiv_id": the arXiv ID in the form "YYMM.NNNNN" (e.g. "2310.06117"). If you are not sure of the exact ID, omit the entry — do NOT make up IDs.
+  - "arxiv_id": the arXiv ID in the form "YYMM.NNNNN" (e.g. "2310.06117").
+    If you are not sure of the exact ID, omit the entry — do NOT make up IDs.
   - "title": the paper title.
+  - "reason": 1 sentence on why this paper matters for this student's direction.
 
 Only include papers you are confident exist on arXiv. Return ONLY the JSON array, no prose, no markdown fences."""
 
@@ -81,7 +107,7 @@ Only include papers you are confident exist on arXiv. Return ONLY the JSON array
         model=model_name,
         messages=[{"role": "user", "content": prompt}],
         temperature=0.3,
-        max_tokens=3000,
+        max_tokens=4000,
     )
     text = resp.choices[0].message.content.strip()
     text = re.sub(r"```(?:json)?", "", text).strip()
@@ -91,10 +117,15 @@ Only include papers you are confident exist on arXiv. Return ONLY the JSON array
         print(f"  LLM output parse failed: {e}")
         return []
     valid = []
-    for it in items:
+    for rank, it in enumerate(items):
         aid = str(it.get("arxiv_id", "")).strip()
         if re.match(r"^\d{4}\.\d{4,5}$", aid):
-            valid.append({"arxiv_id": aid, "title": it.get("title", "")})
+            valid.append({
+                "arxiv_id": aid,
+                "title": it.get("title", ""),
+                "reason": it.get("reason", ""),
+                "rank": rank,
+            })
     print(f"  LLM proposed {len(valid)} candidates with well-formed arxiv IDs")
     return valid
 
@@ -293,6 +324,14 @@ def load_or_refresh(interest, feedback_path, force=False, top_k=TOP_K):
     verified = verify_candidates(candidates)
     print(f"  {len(verified)} candidates verified on arxiv")
 
+    # Carry over rank and reason from Claude's recommendations
+    rank_map = {c["arxiv_id"]: c for c in candidates}
+    for p in verified:
+        meta = rank_map.get(p["arxiv_id"], {})
+        p["rank"] = meta.get("rank", 999)
+        if meta.get("reason"):
+            p["Reasons for match"] = meta["reason"]
+
     # Phase 3: expand via Semantic Scholar
     if verified:
         top_seeds = verified[:5]
@@ -300,6 +339,7 @@ def load_or_refresh(interest, feedback_path, force=False, top_k=TOP_K):
         seen = {p["arxiv_id"] for p in verified}
         for p in expanded:
             if p["arxiv_id"] not in seen:
+                p["rank"] = 900  # SS expansions rank after Claude's picks
                 verified.append(p)
                 seen.add(p["arxiv_id"])
 
@@ -313,30 +353,31 @@ def load_or_refresh(interest, feedback_path, force=False, top_k=TOP_K):
         seen_ids.add(aid)
         all_candidates.append(p)
 
-    # Phase 5: score (only those without scores to save cost)
+    # Phase 5: score with gpt-4o-mini — used only as a FILTER, not for ranking.
+    # Claude Opus already ordered candidates by reading priority; we just need to
+    # weed out clearly off-topic papers (core_score < MIN_FILTER_SCORE).
     from relevancy import generate_relevance_score
+    MIN_FILTER_SCORE = 4
     need_scoring = [p for p in all_candidates if p.get("core_score") is None or p.get("transfer_score") is None]
     already_scored = [p for p in all_candidates if p.get("core_score") is not None and p.get("transfer_score") is not None]
     if need_scoring:
         newly_scored, _ = generate_relevance_score(
             need_scoring,
             query={"interest": interest},
-            model_name="gpt-4o-mini",
+            model_name="openai/gpt-4o-mini",
             num_paper_in_prompt=16,
         )
     else:
         newly_scored = []
     scored = already_scored + newly_scored
 
-    # Phase 6: rank and pick
-    scored.sort(
-        key=lambda p: max(p.get("core_score", 0), p.get("transfer_score", 0)),
-        reverse=True,
-    )
-    picks = [
+    # Phase 6: filter out clearly off-topic, then rank by Claude's reading order
+    filtered = [
         p for p in scored
-        if max(p.get("core_score", 0), p.get("transfer_score", 0)) >= MIN_SCORE
-    ][:top_k * 2]
+        if max(p.get("core_score", 0), p.get("transfer_score", 0)) >= MIN_FILTER_SCORE
+    ]
+    filtered.sort(key=lambda p: p.get("rank", 999))
+    picks = filtered[:top_k * 2]
 
     with open(CACHE_PATH, "w") as f:
         json.dump(

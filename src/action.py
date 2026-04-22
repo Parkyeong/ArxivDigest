@@ -7,7 +7,6 @@ import argparse
 import yaml
 import os
 from dotenv import load_dotenv
-import openai
 from relevancy import generate_relevance_score, process_subject_fields
 from download_new_papers import get_papers
 
@@ -312,7 +311,7 @@ HTML_TEMPLATE = """<!DOCTYPE html>
 </head><body>
 {nav}
 <h1>📰 Daily Digest — {date}</h1>
-<p class="meta">Top {n_daily} today · Industry: {n_industry} · Classics: {n_classic} · Feedback: {fb_status}</p>
+<p class="meta">Top {n_daily} today · Classics: {n_classic} · Feedback: {fb_status}</p>
 {warning}
 
 <h2>Top Picks of Today</h2>
@@ -320,10 +319,6 @@ HTML_TEMPLATE = """<!DOCTYPE html>
 {core_html}
 <h3 class="lab">Cross-domain / Transferable ({n_transfer})</h3>
 {transfer_html}
-
-<h2>🏭 Industry Highlights — Past 14 Days</h2>
-<p class="meta">{industry_status}</p>
-{industry_html}
 
 <h2>📚 Classic Papers in Your Field</h2>
 <p class="meta">{classics_status}</p>
@@ -552,23 +547,6 @@ def select_top_papers(scored_papers, n_core=3, n_transfer=7):
     return core_picks, transfer_picks
 
 
-def _render_industry_section(picks):
-    if not picks:
-        return "<p>No industry papers found.</p>", 0
-    blocks = []
-    total = 0
-    for lab, papers in picks.items():
-        if not papers:
-            blocks.append(f'<h3 class="lab">{lab}</h3><p class="meta">No relevant papers in the past 14 days.</p>')
-            continue
-        total += len(papers)
-        lab_html = [f'<h3 class="lab">{lab} ({len(papers)})</h3>']
-        for p in papers:
-            lab_html.append(_render_paper(p, stage=1, source=f"industry/{lab}"))
-        blocks.append("\n".join(lab_html))
-    return "\n".join(blocks), total
-
-
 def _render_classics_section(picks):
     if not picks:
         return "<p>No classic papers selected yet.</p>", 0
@@ -576,7 +554,6 @@ def _render_classics_section(picks):
 
 
 def generate_body(topic, categories, interest, threshold,
-                  include_industry=True, refresh_industry=False,
                   include_classics=True, refresh_classics=False):
     if topic == "Physics":
         raise RuntimeError("You must choose a physics subtopic.")
@@ -654,19 +631,6 @@ def generate_body(topic, categories, interest, threshold,
     if hallucination:
         warning = '<p style="color:#c44;">⚠ Warning: model output was partially malformed; some scores may be missing.</p>'
 
-    industry_html = ""
-    industry_status = "Industry section disabled."
-    n_industry = 0
-    if include_industry:
-        from industry import load_or_refresh as industry_load, CACHE_PATH as IND_PATH, CACHE_TTL_DAYS as IND_TTL
-        picks = industry_load(interest, force=refresh_industry)
-        industry_html, n_industry = _render_industry_section(picks)
-        if os.path.exists(IND_PATH):
-            import json as _json
-            with open(IND_PATH) as f:
-                ts = _json.load(f)["timestamp"]
-            industry_status = f"Cache from {ts[:10]}, auto-refresh every {IND_TTL} days. Use --refresh-industry to force."
-
     classics_html = ""
     classics_status = "Classics section disabled."
     n_classic = 0
@@ -690,14 +654,11 @@ def generate_body(topic, categories, interest, threshold,
         n_daily=len(core_picks) + len(transfer_picks),
         n_core=len(core_picks),
         n_transfer=len(transfer_picks),
-        n_industry=n_industry,
         n_classic=n_classic,
         fb_status=fb_status,
         warning=warning,
         core_html="\n".join(_render_paper(p, stage=1, source="daily/core") for p in core_picks) or "<p>No papers matched.</p>",
         transfer_html="\n".join(_render_paper(p, stage=1, source="daily/transfer") for p in transfer_picks) or "<p>No papers matched.</p>",
-        industry_html=industry_html,
-        industry_status=industry_status,
         classics_html=classics_html,
         classics_status=classics_status,
     )
@@ -718,14 +679,6 @@ if __name__ == "__main__":
         "--config", help="yaml config file to use", default="config.yaml"
     )
     parser.add_argument(
-        "--refresh-industry", action="store_true",
-        help="Force refresh of industry section cache (normally auto-refreshes every 7 days)"
-    )
-    parser.add_argument(
-        "--no-industry", action="store_true",
-        help="Skip the industry highlights section"
-    )
-    parser.add_argument(
         "--refresh-classics", action="store_true",
         help="Force refresh of classic papers cache (normally auto-refreshes every 30 days)"
     )
@@ -737,9 +690,8 @@ if __name__ == "__main__":
     with open(args.config, "r") as f:
         config = yaml.safe_load(f)
 
-    if "OPENAI_API_KEY" not in os.environ:
-        raise RuntimeError("No openai api key found")
-    openai.api_key = os.environ.get("OPENAI_API_KEY")
+    if "OPENROUTER_API_KEY" not in os.environ:
+        raise RuntimeError("OPENROUTER_API_KEY not set")
 
     topic = config["topic"]
     categories = config["categories"]
@@ -749,8 +701,6 @@ if __name__ == "__main__":
     interest = config["interest"]
     digest_html, queue_html, library_html = generate_body(
         topic, categories, interest, threshold,
-        include_industry=not args.no_industry,
-        refresh_industry=args.refresh_industry,
         include_classics=not args.no_classics,
         refresh_classics=args.refresh_classics,
     )
