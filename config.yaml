@@ -21,29 +21,44 @@ threshold: 6
 # This can be empty, which just return a full list of papers with no judgement or filtering,
 # in whatever order arXiv responds with.
 interest: |
-  My core research focus is improving the EFFICIENCY of LLM-based agent systems
-  (including multi-agent systems). I want papers that optimize either a specific
-  component of an agent system OR the entire pipeline end-to-end.
+  ## Core research proposition
 
-  Highly relevant topics:
-  1. LLM agents and multi-agent systems (planning, tool use, orchestration, memory, communication)
-  2. Efficiency optimization of agent systems: inference cost, latency, token usage,
-     routing, caching, scheduling, compression, distillation for agents
-  3. Automated agent workflow design / search (e.g. AFlow, GPTSwarm, ADAS, DSPy-style optimization)
-  4. Reinforcement learning for agent / LLM training, RLHF, RLAIF, agentic RL, RL-based
-     workflow optimization
-  5. Evaluation and benchmarking of LLM agents (especially efficiency-aware evaluation,
-     cost-quality tradeoffs)
+  Under a fixed compute/cost budget, how should LLM-based agent systems be
+  designed, orchestrated, or searched over to maximize task performance?
+  Two active lines:
+  (1) MCTS/tree-search-based workflow optimization for agent systems
+  (2) Efficient multi-agent collaboration vs single large LLM on long-horizon tasks
 
-  Also welcome (cross-domain methods that could transfer to agent efficiency):
-  - System / ML system optimization techniques (speculative decoding, KV cache, batching,
-     scheduling) if they plausibly apply to agent pipelines
-  - Program synthesis, neural architecture search, AutoML ideas that could inspire
-     automated agent design
-  - Graph / combinatorial optimization methods relevant to multi-agent coordination
+  ## STRONGLY RELEVANT — score 8-10
 
-  Less interested in:
-  - Pure application papers with no methodological contribution (e.g. "we applied an
-     LLM agent to domain X")
-  - Papers focused only on a specific non-English language
-  - Pure theoretical papers with no connection to practical systems
+  - Multi-agent collaboration architectures where multiple instances genuinely
+    collaborate, debate, or divide labor (Du et al. debate, MoA, MacNet)
+  - MCTS / tree search over agent actions or workflows (AFlow, LATS, and follow-ups);
+    reward function design for agent rollouts
+  - Agent memory systems that improve cross-session or cross-task efficiency
+    (A-Mem, plan caching, experience replay for agents)
+  - Test-time compute scaling specifically for LONG-HORIZON agentic tasks
+    (trajectory-level, not single-turn BoN/CoT)
+  - Automated agent workflow design / search (AFlow, GPTSwarm, ADAS, DSPy-style)
+  - Cost-performance tradeoffs in agent systems: SLM vs large-LLM, token-budget
+    optimization, agent-level routing
+
+  ## ADJACENT — score 5-7 only if methodologically transferable
+
+  - Model routing / selection (FrugalGPT, GraphRAG-Router): baseline contrast only
+  - Single-agent tool-use pipelines (ReAct, Reflexion): background, not core
+  - RL for LLM training (RLHF, RLAIF): relevant only if applied to agent workflows
+  - Evaluation/benchmarking of agents: useful but not core unless efficiency-focused
+
+  ## NOT MY DIRECTION — score 1-4 even if keywords match
+
+  - Inference infrastructure: KV cache compression, speculative decoding, vLLM,
+    streaming, quantization, memory reduction (infra layer, not agent layer)
+  - Retrieval-augmented generation where retrieval IS the contribution (FLARE-style)
+  - Single-turn inference algorithms: BoN with confidence scoring (SCATR), CoT
+    variants, PAL-style program-aided reasoning — different problem setup
+  - Multimodal/vision-language unless core contribution is agent orchestration
+  - Robotics / embodied RL even when LLMs are involved (Eureka, Voyager)
+  - Pure prompt engineering without architectural contribution
+  - Model architecture papers (MoE, Mamba hybrids) unless specifically about agents
+  - Pure application papers ("we applied an LLM agent to domain X")
